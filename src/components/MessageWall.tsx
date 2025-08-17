@@ -24,39 +24,24 @@ export const MessageWall = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isPostDialogOpen, setIsPostDialogOpen] = useState(false);
 
-  const gradientTypes: Array<'purple' | 'cyan' | 'green' | 'orange'> = ['purple', 'cyan', 'green', 'orange'];
+  // Predefined set of gradient colour types
+  const gradientTypes: Array<'purple' | 'cyan' | 'green' | 'orange'> = [
+    'purple',
+    'cyan',
+    'green',
+    'orange'
+  ];
 
-  const handleAddMessage = (content: string, author: string) => {
-    // Send the new message to the backend. The backend will return the saved record.
-    fetch('/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: author || '匿名', content })
-    })
-      .then(res => res.json())
-      .then((msg: DBMessage) => {
-        const newMessage: Message = {
-          id: msg.id.toString(),
-          content: msg.content,
-          author: msg.username ?? '匿名',
-          timestamp: new Date(msg.created_at),
-          gradientType: gradientTypes[Math.floor(Math.random() * gradientTypes.length)]
-        };
-        setMessages(prev => [newMessage, ...prev]);
-        setIsPostDialogOpen(false);
-      })
-      .catch(err => {
-        console.error(err);
-      });
-  };
-
-  // Load existing messages when the component mounts
-  useEffect(() => {
+  /**
+   * Fetch the latest messages from the backend and update state.
+   * This function is used on mount and when the user pulls down to refresh.
+   */
+  const loadMessages = () => {
     fetch('/messages')
-      .then(res => res.json())
+      .then((res) => res.json())
       .then((data: DBMessage[]) => {
         setMessages(
-          data.map(msg => ({
+          data.map((msg) => ({
             id: msg.id.toString(),
             content: msg.content,
             author: msg.username ?? '匿名',
@@ -65,9 +50,60 @@ export const MessageWall = () => {
           }))
         );
       })
-      .catch(err => {
+      .catch((err) => {
         console.error(err);
       });
+  };
+
+  /**
+   * Submit a new message to the backend. The backend returns the saved record,
+   * which is then prepended to the current message list.
+   */
+  const handleAddMessage = (content: string, author: string) => {
+    fetch('/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: author || '匿名', content })
+    })
+      .then((res) => res.json())
+      .then((msg: DBMessage) => {
+        const newMessage: Message = {
+          id: msg.id.toString(),
+          content: msg.content,
+          author: msg.username ?? '匿名',
+          timestamp: new Date(msg.created_at),
+          gradientType: gradientTypes[Math.floor(Math.random() * gradientTypes.length)]
+        };
+        // Prepend the new message so it appears at the top of the wall
+        setMessages((prev) => [newMessage, ...prev]);
+        setIsPostDialogOpen(false);
+      })
+      .catch((err) => {
+        console.error(err);
+      });
+  };
+
+  // Load messages on mount and set up a scroll listener for pull‑down refresh
+  useEffect(() => {
+    loadMessages();
+    const handleScroll = () => {
+      // Detect whether the user has scrolled close to the very top of the page.
+      // Different browsers may update scroll positions on different elements, so
+      // check both document.documentElement and document.body. When near the
+      // top (within 50px), refresh the message list. This allows a slight
+      // margin so users don’t have to reach an exact value of 0.
+      const top =
+        (document.documentElement && document.documentElement.scrollTop) ||
+        document.body.scrollTop;
+      if (top <= 50) {
+        loadMessages();
+      }
+    };
+    window.addEventListener('scroll', handleScroll);
+    return () => {
+      window.removeEventListener('scroll', handleScroll);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
