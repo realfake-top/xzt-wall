@@ -9,7 +9,7 @@ interface Message {
   content: string;
   author: string;
   timestamp: Date;
-  gradientType: "purple" | "cyan" | "green" | "orange";
+  gradientType: 'purple' | 'cyan' | 'green' | 'orange';
 }
 
 interface DBMessage {
@@ -28,7 +28,7 @@ type PullMode = null | "bottom";
 
 export const MessageWall = () => {
   const [messages, setMessages] = useState<Message[]>([]);
-  // 仅渲染前 renderCount 条：10 → 20 → 30 ...
+  // 控制“当前渲染条数”：10 → 20 → 30 ...
   const [renderCount, setRenderCount] = useState(PAGE_SIZE);
   const [isPostDialogOpen, setIsPostDialogOpen] = useState(false);
 
@@ -37,35 +37,33 @@ export const MessageWall = () => {
   const [bottomReady, setBottomReady] = useState(false);
   const [bottomLoading, setBottomLoading] = useState(false);
 
-  // 是否还有更多（为 false 后完全不再触发加载）
+  // 是否还有更多老消息
   const [hasMore, setHasMore] = useState(true);
 
-  // 游标：当前已加载里“最老”的时间戳
+  // 游标：最老
   const oldestCursorRef = useRef<string | null>(null);
 
-  // 手势/并发控制
+  // 手势 refs
   const pullingRef = useRef(false);
   const pullModeRef = useRef<PullMode>(null);
   const startYRef = useRef(0);
-  const busyRef = useRef(false);
+  const busyRef = useRef(false); // 任一加载中，避免并发
 
-  const gradientTypes: Array<"purple" | "cyan" | "green" | "orange"> = [
-    "purple",
-    "cyan",
-    "green",
-    "orange",
+  const gradientTypes: Array<'purple' | 'cyan' | 'green' | 'orange'> = [
+    'purple', 'cyan', 'green', 'orange'
   ];
 
   const mapDB = (rows: DBMessage[]): Message[] =>
     rows.map((msg) => ({
       id: msg.id.toString(),
       content: msg.content,
-      author: msg.username ?? "匿名",
+      author: msg.username ?? '匿名',
       timestamp: new Date(msg.created_at),
-      gradientType: gradientTypes[Math.floor(Math.random() * gradientTypes.length)],
+      gradientType:
+        gradientTypes[Math.floor(Math.random() * gradientTypes.length)],
     }));
 
-  // 初始加载：仅取最新 PAGE_SIZE 条，且只渲染 PAGE_SIZE 条
+  // 初始只取最新 10 条（服务端不支持 limit 时也仅渲染 10 条）
   const loadInitial = useCallback(async () => {
     try {
       const res = await fetch(`/messages?limit=${PAGE_SIZE}`);
@@ -78,55 +76,56 @@ export const MessageWall = () => {
       if (list.length > 0) {
         oldestCursorRef.current = list[list.length - 1].timestamp.toISOString();
       }
-
+      // 如果一开始就不足 10 条，直接标记没有更多
       if (list.length < PAGE_SIZE) {
-        setHasMore(false); // 一开始就不满一页，直接认为已全部加载
+        setHasMore(false);
       }
     } catch (e) {
       console.error(e);
     }
   }, []);
 
-  // 底部加载更老：严格一页一页往下翻；去重后判断是否还有更多
+  // 仅“底部上拉”加载更老（before 游标）；回退 offset；合并并增加 renderCount
   const loadOlder = useCallback(async () => {
     if (busyRef.current || !hasMore) return;
-    if (!oldestCursorRef.current && messages.length === 0) return;
-
     busyRef.current = true;
     setBottomLoading(true);
     try {
       let incoming: DBMessage[] = [];
       if (oldestCursorRef.current) {
         const res = await fetch(
-          `/messages?limit=${PAGE_SIZE}&before=${encodeURIComponent(
-            oldestCursorRef.current,
-          )}`,
+          `/messages?limit=${PAGE_SIZE}&before=${encodeURIComponent(oldestCursorRef.current)}`
         );
         incoming = await res.json();
       } else {
-        // 兜底：offset 模式
+        // 回退：offset 模式
         const res = await fetch(`/messages?limit=${PAGE_SIZE}&offset=${messages.length}`);
         incoming = await res.json();
       }
 
       const older = mapDB(incoming).sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
 
-      // 去重后计算真实新增
-      const idSet = new Set(messages.map((m) => m.id));
-      const toAdd = older.filter((o) => !idSet.has(o.id));
+      if (older.length > 0) {
+        setMessages((prev) => {
+          const map = new Map<string, Message>();
+          [...prev, ...older].forEach((m) => map.set(m.id, m));
+          return Array.from(map.values()).sort(
+            (a, b) => b.timestamp.getTime() - a.timestamp.getTime()
+          );
+        });
 
-      if (toAdd.length > 0) {
-        setMessages((prev) =>
-          [...prev, ...toAdd].sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime()),
-        );
-        setRenderCount((c) => c + toAdd.length);
+        // 增加渲染条数，让新加载的旧消息立刻出现
+        setRenderCount((c) => c + older.length);
 
-        // 仅在有新增时更新最老游标
-        oldestCursorRef.current = toAdd[toAdd.length - 1].timestamp.toISOString();
-      }
+        // 更新最老游标
+        oldestCursorRef.current = older[older.length - 1].timestamp.toISOString();
 
-      // 收口条件：真实新增不足一页，或为 0，则后续不再加载
-      if (toAdd.length < PAGE_SIZE) {
+        // 若本次返回不足 PAGE_SIZE，说明没有更多了
+        if (older.length < PAGE_SIZE) {
+          setHasMore(false);
+        }
+      } else {
+        // 没有任何返回，也认为没有更多了
         setHasMore(false);
       }
     } catch (e) {
@@ -135,16 +134,14 @@ export const MessageWall = () => {
       setBottomLoading(false);
       busyRef.current = false;
     }
-  }, [messages, hasMore]);
+  }, [messages.length, hasMore]);
 
   useEffect(() => {
     loadInitial();
   }, [loadInitial]);
 
-  // 仅在 hasMore === true 时绑定“底部上拉”手势；加载完后彻底不再绑定
+  // ------- 仅“底部上拉”触发加载 ----------
   useEffect(() => {
-    if (!hasMore) return;
-
     const root = document.scrollingElement || document.documentElement;
 
     const isAtBottom = () => {
@@ -176,6 +173,7 @@ export const MessageWall = () => {
       if (!pullingRef.current || busyRef.current || !hasMore) return;
       const dy = e.touches[0].clientY - startYRef.current;
 
+      // 仅“底部上拉加载”
       if (pullModeRef.current === "bottom") {
         if (dy < 0) {
           e.preventDefault(); // 需要 passive:false
@@ -219,30 +217,30 @@ export const MessageWall = () => {
       window.removeEventListener("touchmove", onTouchMove as any);
       window.removeEventListener("touchend", onTouchEnd as any);
     };
-  }, [hasMore, bottomReady, loadOlder]);
+  }, [bottomReady, loadOlder, hasMore]);
 
-  // 发新帖：插入顶部、renderCount+1；不影响向下“翻旧消息”的游标和 hasMore
+  // 发新帖：插入顶部、renderCount+1（可立即看到），不影响“底部加载老消息”的游标
   const handleAddMessage = async (content: string, author: string) => {
     try {
-      const res = await fetch("/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: author || "匿名", content }),
+      const res = await fetch('/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: author || '匿名', content }),
       });
       const msg: DBMessage = await res.json();
       const newMessage: Message = {
         id: msg.id.toString(),
         content: msg.content,
-        author: msg.username ?? "匿名",
+        author: msg.username ?? '匿名',
         timestamp: new Date(msg.created_at),
-        gradientType: gradientTypes[Math.floor(Math.random() * gradientTypes.length)],
+        gradientType:
+          gradientTypes[Math.floor(Math.random() * gradientTypes.length)],
       };
-
-      setMessages((prev) =>
-        [newMessage, ...prev].sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime()),
-      );
+      setMessages((prev) => [newMessage, ...prev].sort(
+        (a, b) => b.timestamp.getTime() - a.timestamp.getTime()
+      ));
       setRenderCount((c) => c + 1);
-
+      // 最老游标不更新（只负责向下翻旧消息）
       if (!oldestCursorRef.current) {
         oldestCursorRef.current = newMessage.timestamp.toISOString();
       }
@@ -265,7 +263,7 @@ export const MessageWall = () => {
               <h1 className="text-xl font-bold text-foreground">吐槽墙</h1>
             </div>
             <div className="text-sm text-muted-foreground">
-              {new Date().toLocaleDateString("zh-CN")}
+              {new Date().toLocaleDateString('zh-CN')}
             </div>
           </div>
         </div>
@@ -274,12 +272,13 @@ export const MessageWall = () => {
       {/* 列表 */}
       <main className="max-w-2xl mx-auto px-4 py-6 pb-28">
         <div className="space-y-4">
+          {/* 仅渲染 renderCount 条 */}
           {messages.slice(0, renderCount).map((m) => (
             <MessageCard key={m.id} message={m} />
           ))}
         </div>
 
-        {/* 底部上拉提示/加载条（仅在 hasMore 时显示） */}
+        {/* 底部上拉提示/加载条（移动端上拉触发） */}
         {hasMore && (
           <div
             className="sticky bottom-16 z-20 flex items-center justify-center overflow-hidden"
@@ -302,16 +301,20 @@ export const MessageWall = () => {
           </div>
         )}
 
-        {/* 桌面端/通用“加载更多”（仅在 hasMore 时显示；加载完则替换为提示） */}
-        {hasMore ? (
-          <div className="mt-6 flex justify-center">
-            <Button variant="outline" disabled={bottomLoading} onClick={loadOlder}>
+        {/* 桌面端/通用的“加载更多”按钮（可与上拉二选一使用） */}
+        <div className="mt-6 flex justify-center">
+          {hasMore ? (
+            <Button
+              variant="outline"
+              disabled={bottomLoading}
+              onClick={() => loadOlder()}
+            >
               {bottomLoading ? "加载中…" : `加载更早的 ${PAGE_SIZE} 条`}
             </Button>
-          </div>
-        ) : (
-          <div className="mt-6 text-sm text-muted-foreground text-center">— 已加载全部 —</div>
-        )}
+          ) : (
+            <div className="text-sm text-muted-foreground py-2">— 没有更多了 —</div>
+          )}
+        </div>
       </main>
 
       {/* 悬浮发帖 */}
