@@ -330,9 +330,9 @@ export const MessageWall = () => {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 bg-gradient-to-br from-primary to-accent rounded-lg flex items-center justify-center">
-                <span className="text-white font-bold text-sm">墙</span>
+                <span className="text-white font-bold text-sm">槽</span>
               </div>
-              <h1 className="text-xl font-bold text-foreground">我的墙</h1>
+              <h1 className="text-xl font-bold text-foreground">─=≡Σ((( つ•̀ω•́)つ</h1>
             </div>
             <div className="text-sm text-muted-foreground">
               {new Date().toLocaleDateString('zh-CN')}
