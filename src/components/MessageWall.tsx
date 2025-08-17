@@ -20,35 +20,26 @@ interface DBMessage {
 }
 
 const PAGE_SIZE = 10;
-const MAX_PULL = 120;
-const THRESHOLD = 60;
-const DAMPING = 0.5;
-
-type PullMode = null | "top" | "bottom";
 
 export const MessageWall = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [renderCount, setRenderCount] = useState(PAGE_SIZE);
   const [isPostDialogOpen, setIsPostDialogOpen] = useState(false);
 
-  // 顶部/底部拉动的 UI 状态
-  const [topPull, setTopPull] = useState(0);
-  const [topReady, setTopReady] = useState(false);
-  const [topLoading, setTopLoading] = useState(false);
-
-  const [bottomPull, setBottomPull] = useState(0);
-  const [bottomReady, setBottomReady] = useState(false);
-  const [bottomLoading, setBottomLoading] = useState(false);
+  // 下拉刷新逻辑移除，改为底部无限加载
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true); // 是否还有更多老数据
 
   // 游标：最新与最老
   const newestCursorRef = useRef<string | null>(null);
   const oldestCursorRef = useRef<string | null>(null);
 
-  // 手势 refs
-  const pullingRef = useRef(false);
-  const pullModeRef = useRef<PullMode>(null);
-  const startYRef = useRef(0);
-  const busyRef = useRef(false); // 任一刷新/加载中，避免并发
+  // 并发保护
+  const busyRef = useRef(false);
+
+  // 触底观察哨兵
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const observerRef = useRef<IntersectionObserver | null>(null);
 
   const gradientTypes: Array<'purple' | 'cyan' | 'green' | 'orange'> = [
     'purple', 'cyan', 'green', 'orange'
@@ -64,70 +55,33 @@ export const MessageWall = () => {
         gradientTypes[Math.floor(Math.random() * gradientTypes.length)],
     }));
 
-  // 初始加载：取最新 N 条（服务端若不支持 limit，这里仍然只展示前 N 条）
+  // 初始加载：取最新 N 条
   const loadInitial = useCallback(async () => {
-    const res = await fetch(`/messages?limit=${PAGE_SIZE}`);
-    const data: DBMessage[] = await res.json();
-    const list = mapDB(data).sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-
-    setMessages(list);
-    setRenderCount(Math.min(PAGE_SIZE, list.length));
-
-    if (list.length > 0) {
-      newestCursorRef.current = list[0].timestamp.toISOString();
-      oldestCursorRef.current = list[list.length - 1].timestamp.toISOString();
-    }
-  }, []);
-
-  // 顶部：拉取比 newestCursor 更新的消息；后端不支持 after 时也能兼容（会去重）
-  const loadNewer = useCallback(async () => {
-    if (busyRef.current) return;
-    busyRef.current = true;
-    setTopLoading(true);
     try {
-      let incoming: DBMessage[] = [];
-      if (newestCursorRef.current) {
-        const res = await fetch(
-          `/messages?limit=${PAGE_SIZE}&after=${encodeURIComponent(newestCursorRef.current)}`
-        );
-        incoming = await res.json();
-      } else {
-        const res = await fetch(`/messages?limit=${PAGE_SIZE}`);
-        incoming = await res.json();
-      }
+      const res = await fetch(`/messages?limit=${PAGE_SIZE}`);
+      const data: DBMessage[] = await res.json();
+      const list = mapDB(data).sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
 
-      const newer = mapDB(incoming).sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
-      if (newer.length > 0) {
-        setMessages((prev) => {
-          const map = new Map<string, Message>();
-          // 先放新，再放旧，确保新消息在前面
-          [...newer, ...prev].forEach((m) => map.set(m.id, m));
-          return Array.from(map.values()).sort(
-            (a, b) => b.timestamp.getTime() - a.timestamp.getTime()
-          );
-        });
-        // 让显示条数 + 新增条数（这样用户能立刻看到刚刷出来的）
-        setRenderCount((c) => c + newer.length);
-        newestCursorRef.current = newer[0].timestamp.toISOString();
-        if (!oldestCursorRef.current) {
-          oldestCursorRef.current = newer[newer.length - 1].timestamp.toISOString();
-        }
+      setMessages(list);
+      setRenderCount(Math.min(PAGE_SIZE, list.length));
+      setHasMore(list.length === PAGE_SIZE); // 如果不足一页，说明没有更多
+
+      if (list.length > 0) {
+        newestCursorRef.current = list[0].timestamp.toISOString();
+        oldestCursorRef.current = list[list.length - 1].timestamp.toISOString();
       }
     } catch (e) {
       console.error(e);
-    } finally {
-      setTopLoading(false);
-      busyRef.current = false;
     }
   }, []);
 
-  // 底部：拉取更老（before 游标）；回退 offset；合并并增加 renderCount
+  // 触底后加载更老（before 游标）
   const loadOlder = useCallback(async () => {
-    if (busyRef.current) return;
+    if (busyRef.current || !hasMore) return;
     if (!oldestCursorRef.current && messages.length === 0) return;
 
     busyRef.current = true;
-    setBottomLoading(true);
+    setLoadingMore(true);
     try {
       let incoming: DBMessage[] = [];
       if (oldestCursorRef.current) {
@@ -142,6 +96,7 @@ export const MessageWall = () => {
       }
 
       const older = mapDB(incoming).sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+
       if (older.length > 0) {
         setMessages((prev) => {
           const map = new Map<string, Message>();
@@ -156,123 +111,59 @@ export const MessageWall = () => {
           newestCursorRef.current = older[0].timestamp.toISOString();
         }
       }
+
+      // 如果返回不足 PAGE_SIZE，认为没有更多
+      if (older.length < PAGE_SIZE) {
+        setHasMore(false);
+      }
     } catch (e) {
       console.error(e);
     } finally {
-      setBottomLoading(false);
+      setLoadingMore(false);
       busyRef.current = false;
     }
-  }, [messages.length]);
+  }, [messages.length, hasMore]);
 
   useEffect(() => {
     loadInitial();
   }, [loadInitial]);
 
-  // ------- 仅“顶/底拉动”触发更新，普通滚动不触发 ----------
+  // 监听底部哨兵，自动触发加载更多
   useEffect(() => {
-    const root = document.scrollingElement || document.documentElement;
+    if (!sentinelRef.current) return;
 
-    const isAtTop = () => (root?.scrollTop ?? 0) <= 0;
-    const isAtBottom = () => {
-      const scrollTop = root?.scrollTop ?? 0;
-      const clientH = root?.clientHeight ?? 0;
-      const scrollH = root?.scrollHeight ?? 0;
-      return scrollH - clientH - scrollTop <= 0;
-    };
+    // 清理旧 observer
+    if (observerRef.current) {
+      observerRef.current.disconnect();
+      observerRef.current = null;
+    }
 
-    const resetTopUI = () => {
-      setTopReady(false);
-      setTopPull(0);
-    };
-    const resetBottomUI = () => {
-      setBottomReady(false);
-      setBottomPull(0);
-    };
-
-    const onTouchStart = (e: TouchEvent) => {
-      if (busyRef.current) return;
-      const touchY = e.touches[0].clientY;
-      startYRef.current = touchY;
-      if (isAtTop()) {
-        pullingRef.current = true;
-        pullModeRef.current = "top";
-      } else if (isAtBottom()) {
-        pullingRef.current = true;
-        pullModeRef.current = "bottom";
-      } else {
-        pullingRef.current = false;
-        pullModeRef.current = null;
-      }
-    };
-
-    const onTouchMove = (e: TouchEvent) => {
-      if (!pullingRef.current || busyRef.current) return;
-      const dy = e.touches[0].clientY - startYRef.current;
-
-      if (pullModeRef.current === "top") {
-        if (dy > 0) {
-          e.preventDefault(); // 需要 passive:false
-          const d = Math.min(MAX_PULL, dy * DAMPING);
-          setTopPull(d);
-          setTopReady(d >= THRESHOLD);
-        } else {
-          resetTopUI();
+    observerRef.current = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (entry.isIntersecting) {
+          // 进入视口 -> 触发加载
+          loadOlder();
         }
-      } else if (pullModeRef.current === "bottom") {
-        if (dy < 0) {
-          e.preventDefault();
-          const d = Math.min(MAX_PULL, -dy * DAMPING);
-          setBottomPull(d);
-          setBottomReady(d >= THRESHOLD);
-        } else {
-          resetBottomUI();
-        }
+      },
+      {
+        root: null,          // 视口
+        rootMargin: "0px 0px 200px 0px", // 提前 200px 触发
+        threshold: 0.01,
       }
-    };
+    );
 
-    const onTouchEnd = async () => {
-      if (!pullingRef.current || busyRef.current) {
-        resetTopUI();
-        resetBottomUI();
-        pullingRef.current = false;
-        pullModeRef.current = null;
-        return;
-      }
-
-      if (pullModeRef.current === "top") {
-        if (topReady) {
-          setTopLoading(true);
-          setTopPull(48);
-          await loadNewer();
-        }
-        setTopLoading(false);
-        resetTopUI();
-      } else if (pullModeRef.current === "bottom") {
-        if (bottomReady) {
-          setBottomLoading(true);
-          setBottomPull(48);
-          await loadOlder();
-        }
-        setBottomLoading(false);
-        resetBottomUI();
-      }
-
-      pullingRef.current = false;
-      pullModeRef.current = null;
-    };
-
-    window.addEventListener("touchstart", onTouchStart, { passive: true });
-    window.addEventListener("touchmove", onTouchMove, { passive: false });
-    window.addEventListener("touchend", onTouchEnd, { passive: true });
+    observerRef.current.observe(sentinelRef.current);
 
     return () => {
-      window.removeEventListener("touchstart", onTouchStart as any);
-      window.removeEventListener("touchmove", onTouchMove as any);
-      window.removeEventListener("touchend", onTouchEnd as any);
+      if (observerRef.current) {
+        observerRef.current.disconnect();
+        observerRef.current = null;
+      }
     };
-  }, [topReady, bottomReady, loadNewer, loadOlder]);
+  }, [loadOlder]);
 
-  // 发新帖：插入顶部、增加 renderCount、更新 newestCursor
+  // 发新帖：插入顶部、更新 newestCursor
   const handleAddMessage = async (content: string, author: string) => {
     try {
       const res = await fetch('/messages', {
@@ -290,7 +181,7 @@ export const MessageWall = () => {
           gradientTypes[Math.floor(Math.random() * gradientTypes.length)],
       };
       setMessages((prev) => [newMessage, ...prev]);
-      setRenderCount((c) => c + 1);
+      // 不强制增加 renderCount：保持“先看到旧的，再滚动加载”的体验
       newestCursorRef.current = newMessage.timestamp.toISOString();
       if (!oldestCursorRef.current) {
         oldestCursorRef.current = newMessage.timestamp.toISOString();
@@ -302,28 +193,7 @@ export const MessageWall = () => {
   };
 
   return (
-    <div className="min-h-screen bg-background overscroll-y-contain">
-      {/* 顶部下拉提示/加载条 */}
-      <div
-        className="sticky top-0 z-20 flex items-center justify-center overflow-hidden"
-        style={{ height: topLoading ? 48 : topPull }}
-      >
-        {(topPull > 0 || topLoading) && (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            {topLoading ? (
-              <>
-                <span className="inline-block h-4 w-4 rounded-full border-2 border-muted-foreground/40 border-t-foreground animate-spin" />
-                <span>正在获取最新…</span>
-              </>
-            ) : topReady ? (
-              <span>松手刷新最新</span>
-            ) : (
-              <span>下拉刷新</span>
-            )}
-          </div>
-        )}
-      </div>
-
+    <div className="min-h-screen bg-background">
       {/* Header */}
       <header className="sticky top-0 z-10 bg-background/80 backdrop-blur-sm border-b border-border">
         <div className="max-w-2xl mx-auto px-4 py-4">
@@ -344,30 +214,22 @@ export const MessageWall = () => {
       {/* 列表 */}
       <main className="max-w-2xl mx-auto px-4 py-6 pb-24">
         <div className="space-y-4">
-          {/* ✅ 这里是真正限制渲染条数的关键 */}
           {messages.slice(0, renderCount).map((m) => (
             <MessageCard key={m.id} message={m} />
           ))}
         </div>
 
-        {/* 底部上拉提示/加载条 */}
-        <div
-          className="sticky bottom-0 z-20 flex items-center justify-center overflow-hidden"
-          style={{ height: bottomLoading ? 48 : bottomPull }}
-        >
-          {(bottomPull > 0 || bottomLoading) && (
+        {/* 底部哨兵 & 状态 */}
+        <div ref={sentinelRef} className="h-12 flex items-center justify-center">
+          {loadingMore ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              {bottomLoading ? (
-                <>
-                  <span className="inline-block h-4 w-4 rounded-full border-2 border-muted-foreground/40 border-t-foreground animate-spin" />
-                  <span>正在加载更早的留言…</span>
-                </>
-              ) : bottomReady ? (
-                <span>松手加载更早</span>
-              ) : (
-                <span>上拉加载</span>
-              )}
+              <span className="inline-block h-4 w-4 rounded-full border-2 border-muted-foreground/40 border-t-foreground animate-spin" />
+              <span>正在加载更多…</span>
             </div>
+          ) : !hasMore ? (
+            <div className="text-sm text-muted-foreground">没有更多了</div>
+          ) : (
+            <div className="text-sm text-muted-foreground">下拉滚动以加载更多</div>
           )}
         </div>
       </main>
