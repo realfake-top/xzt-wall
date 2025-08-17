@@ -309,7 +309,7 @@ export const MessageWall = () => {
               disabled={bottomLoading}
               onClick={() => loadOlder()}
             >
-              {bottomLoading ? "加载中…" : `加载更早的 ${PAGE_SIZE} 条`}
+              {bottomLoading ? "加载中…" : `加载更多`}
             </Button>
           ) : (
             <div className="text-sm text-muted-foreground py-2">— 没有更多了 —</div>
