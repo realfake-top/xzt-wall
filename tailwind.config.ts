@@ -52,6 +52,14 @@ export default {
 					DEFAULT: 'hsl(var(--card))',
 					foreground: 'hsl(var(--card-foreground))'
 				},
+				'gradient-purple': 'hsl(var(--gradient-purple))',
+				'gradient-purple-light': 'hsl(var(--gradient-purple-light))',
+				'gradient-cyan': 'hsl(var(--gradient-cyan))',
+				'gradient-cyan-light': 'hsl(var(--gradient-cyan-light))',
+				'gradient-green': 'hsl(var(--gradient-green))',
+				'gradient-green-light': 'hsl(var(--gradient-green-light))',
+				'gradient-orange': 'hsl(var(--gradient-orange))',
+				'gradient-orange-light': 'hsl(var(--gradient-orange-light))',
 				sidebar: {
 					DEFAULT: 'hsl(var(--sidebar-background))',
 					foreground: 'hsl(var(--sidebar-foreground))',
