@@ -28,6 +28,7 @@ type PullMode = null | "top" | "bottom";
 
 export const MessageWall = () => {
   const [messages, setMessages] = useState<Message[]>([]);
+  const [renderCount, setRenderCount] = useState(PAGE_SIZE);
   const [isPostDialogOpen, setIsPostDialogOpen] = useState(false);
 
   // 顶部/底部拉动的 UI 状态
@@ -63,19 +64,22 @@ export const MessageWall = () => {
         gradientTypes[Math.floor(Math.random() * gradientTypes.length)],
     }));
 
-  // 初始加载：取最新 10 条（默认服务端按时间倒序）
+  // 初始加载：取最新 N 条（服务端若不支持 limit，这里仍然只展示前 N 条）
   const loadInitial = useCallback(async () => {
     const res = await fetch(`/messages?limit=${PAGE_SIZE}`);
     const data: DBMessage[] = await res.json();
-    const list = mapDB(data);
+    const list = mapDB(data).sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+
     setMessages(list);
+    setRenderCount(Math.min(PAGE_SIZE, list.length));
+
     if (list.length > 0) {
       newestCursorRef.current = list[0].timestamp.toISOString();
       oldestCursorRef.current = list[list.length - 1].timestamp.toISOString();
     }
   }, []);
 
-  // 顶部：拉取比 newestCursor 更新的消息；回退：整页并去重
+  // 顶部：拉取比 newestCursor 更新的消息；后端不支持 after 时也能兼容（会去重）
   const loadNewer = useCallback(async () => {
     if (busyRef.current) return;
     busyRef.current = true;
@@ -83,7 +87,6 @@ export const MessageWall = () => {
     try {
       let incoming: DBMessage[] = [];
       if (newestCursorRef.current) {
-        // 推荐：后端支持 after
         const res = await fetch(
           `/messages?limit=${PAGE_SIZE}&after=${encodeURIComponent(newestCursorRef.current)}`
         );
@@ -93,24 +96,21 @@ export const MessageWall = () => {
         incoming = await res.json();
       }
 
-      const newer = mapDB(incoming);
+      const newer = mapDB(incoming).sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
       if (newer.length > 0) {
-        // 合并去重（以 id 为准）
         setMessages((prev) => {
           const map = new Map<string, Message>();
+          // 先放新，再放旧，确保新消息在前面
           [...newer, ...prev].forEach((m) => map.set(m.id, m));
-          const merged = Array.from(map.values()).sort(
+          return Array.from(map.values()).sort(
             (a, b) => b.timestamp.getTime() - a.timestamp.getTime()
           );
-          return merged;
         });
-        // 更新 newestCursor
-        const newest = newer[0].timestamp.toISOString();
-        newestCursorRef.current = newest;
-        // 初次加载后可能没有 oldest，兜底
+        // 让显示条数 + 新增条数（这样用户能立刻看到刚刷出来的）
+        setRenderCount((c) => c + newer.length);
+        newestCursorRef.current = newer[0].timestamp.toISOString();
         if (!oldestCursorRef.current) {
-          const last = newer[newer.length - 1].timestamp.toISOString();
-          oldestCursorRef.current = last;
+          oldestCursorRef.current = newer[newer.length - 1].timestamp.toISOString();
         }
       }
     } catch (e) {
@@ -121,7 +121,7 @@ export const MessageWall = () => {
     }
   }, []);
 
-  // 底部：拉取更老（before 游标）；回退：用 offset
+  // 底部：拉取更老（before 游标）；回退 offset；合并并增加 renderCount
   const loadOlder = useCallback(async () => {
     if (busyRef.current) return;
     if (!oldestCursorRef.current && messages.length === 0) return;
@@ -141,19 +141,17 @@ export const MessageWall = () => {
         incoming = await res.json();
       }
 
-      const older = mapDB(incoming);
+      const older = mapDB(incoming).sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
       if (older.length > 0) {
         setMessages((prev) => {
           const map = new Map<string, Message>();
           [...prev, ...older].forEach((m) => map.set(m.id, m));
-          const merged = Array.from(map.values()).sort(
+          return Array.from(map.values()).sort(
             (a, b) => b.timestamp.getTime() - a.timestamp.getTime()
           );
-          return merged;
         });
-        const newestOldest = older[older.length - 1].timestamp.toISOString();
-        oldestCursorRef.current = newestOldest;
-        // 初始化 newest 游标兜底
+        setRenderCount((c) => c + older.length);
+        oldestCursorRef.current = older[older.length - 1].timestamp.toISOString();
         if (!newestCursorRef.current) {
           newestCursorRef.current = older[0].timestamp.toISOString();
         }
@@ -193,8 +191,8 @@ export const MessageWall = () => {
 
     const onTouchStart = (e: TouchEvent) => {
       if (busyRef.current) return;
-      startYRef.current = e.touches[0].clientY;
-      // 只有在顶部或底部才进入拉动模式
+      const touchY = e.touches[0].clientY;
+      startYRef.current = touchY;
       if (isAtTop()) {
         pullingRef.current = true;
         pullModeRef.current = "top";
@@ -209,31 +207,24 @@ export const MessageWall = () => {
 
     const onTouchMove = (e: TouchEvent) => {
       if (!pullingRef.current || busyRef.current) return;
-
       const dy = e.touches[0].clientY - startYRef.current;
 
       if (pullModeRef.current === "top") {
         if (dy > 0) {
-          // 顶部下拉
-          e.preventDefault(); // 需要 passive: false
+          e.preventDefault(); // 需要 passive:false
           const d = Math.min(MAX_PULL, dy * DAMPING);
           setTopPull(d);
-          const ready = d >= THRESHOLD;
-          setTopReady(ready);
+          setTopReady(d >= THRESHOLD);
         } else {
-          // 向上推回，取消
           resetTopUI();
         }
       } else if (pullModeRef.current === "bottom") {
         if (dy < 0) {
-          // 底部上拉（dy 为负）
           e.preventDefault();
           const d = Math.min(MAX_PULL, -dy * DAMPING);
           setBottomPull(d);
-          const ready = d >= THRESHOLD;
-          setBottomReady(ready);
+          setBottomReady(d >= THRESHOLD);
         } else {
-          // 向下拉回，取消
           resetBottomUI();
         }
       }
@@ -251,7 +242,7 @@ export const MessageWall = () => {
       if (pullModeRef.current === "top") {
         if (topReady) {
           setTopLoading(true);
-          setTopPull(48); // 固定 loading 高度
+          setTopPull(48);
           await loadNewer();
         }
         setTopLoading(false);
@@ -281,7 +272,7 @@ export const MessageWall = () => {
     };
   }, [topReady, bottomReady, loadNewer, loadOlder]);
 
-  // 发新帖：插入顶部并更新 newestCursor
+  // 发新帖：插入顶部、增加 renderCount、更新 newestCursor
   const handleAddMessage = async (content: string, author: string) => {
     try {
       const res = await fetch('/messages', {
@@ -299,6 +290,7 @@ export const MessageWall = () => {
           gradientTypes[Math.floor(Math.random() * gradientTypes.length)],
       };
       setMessages((prev) => [newMessage, ...prev]);
+      setRenderCount((c) => c + 1);
       newestCursorRef.current = newMessage.timestamp.toISOString();
       if (!oldestCursorRef.current) {
         oldestCursorRef.current = newMessage.timestamp.toISOString();
@@ -311,7 +303,7 @@ export const MessageWall = () => {
 
   return (
     <div className="min-h-screen bg-background overscroll-y-contain">
-      {/* 顶部下拉提示/加载条（只在拉动或加载时占位） */}
+      {/* 顶部下拉提示/加载条 */}
       <div
         className="sticky top-0 z-20 flex items-center justify-center overflow-hidden"
         style={{ height: topLoading ? 48 : topPull }}
@@ -352,11 +344,13 @@ export const MessageWall = () => {
       {/* 列表 */}
       <main className="max-w-2xl mx-auto px-4 py-6 pb-24">
         <div className="space-y-4">
-          {messages.slice(0, PAGE_SIZE) /* 初屏只需骨架时可控制，这里直接展示全部当前已载入的 */ &&
-            messages.map((m) => <MessageCard key={m.id} message={m} />)}
+          {/* ✅ 这里是真正限制渲染条数的关键 */}
+          {messages.slice(0, renderCount).map((m) => (
+            <MessageCard key={m.id} message={m} />
+          ))}
         </div>
 
-        {/* 底部上拉提示/加载条（只在拉动或加载时占位） */}
+        {/* 底部上拉提示/加载条 */}
         <div
           className="sticky bottom-0 z-20 flex items-center justify-center overflow-hidden"
           style={{ height: bottomLoading ? 48 : bottomPull }}
@@ -376,8 +370,6 @@ export const MessageWall = () => {
             </div>
           )}
         </div>
-
-        {/* 普通滚动行为下不触发任何加载，这里不显示“没有更多了”以免误导 */}
       </main>
 
       {/* 悬浮发帖 */}
