@@ -332,7 +332,7 @@ export const MessageWall = () => {
               <div className="w-8 h-8 bg-gradient-to-br from-primary to-accent rounded-lg flex items-center justify-center">
                 <span className="text-white font-bold text-sm">槽</span>
               </div>
-              <h1 className="text-xl font-bold text-foreground">─=≡Σ((( つ•̀ω•́)つ</h1>
+              <h1 className="text-xl font-bold text-foreground">吐槽墙-v20250817</h1>
             </div>
             <div className="text-sm text-muted-foreground">
               {new Date().toLocaleDateString('zh-CN')}
