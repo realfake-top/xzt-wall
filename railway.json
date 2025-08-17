@@ -12,21 +12,22 @@
         "build": {
           "cmds": [
             "npm run build",
-            "npm i -g serve"
+            "test -f dist/index.html || (echo '❌ build output missing: dist/index.html' && exit 1)",
+            "npm i --no-save serve@14.2.1"
           ]
         }
       }
     }
   },
   "deploy": {
-    "startCommand": "serve -s dist -l $PORT",
-    "healthcheckPath": "/",
+    "startCommand": "npx serve -s dist -l $PORT",
+    "healthcheckPath": "/index.html",
     "healthcheckTimeout": 100,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
   },
   "variables": {
     "NPM_CONFIG_LEGACY_PEER_DEPS": "true",
-    "NODE_VERSION": "20"
+    "NIXPACKS_NODE_VERSION": "20"
   }
 }
