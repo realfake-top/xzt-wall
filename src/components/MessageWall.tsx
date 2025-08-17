@@ -53,14 +53,26 @@ export const MessageWall = () => {
     'purple', 'cyan', 'green', 'orange'
   ];
 
+  // -------- 配色稳定：由 id 派生，不再随机 --------
+  const hashString = (s: string) => {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) {
+      h = (h << 5) - h + s.charCodeAt(i);
+      h |= 0; // 32-bit
+    }
+    return Math.abs(h);
+  };
+
+  const pickGradient = (id: string) =>
+    gradientTypes[hashString(id) % gradientTypes.length];
+
   const mapDB = (rows: DBMessage[]): Message[] =>
     rows.map((msg) => ({
       id: msg.id.toString(),
       content: msg.content,
       author: msg.username ?? '匿名',
       timestamp: new Date(msg.created_at),
-      gradientType:
-        gradientTypes[Math.floor(Math.random() * gradientTypes.length)],
+      gradientType: pickGradient(msg.id.toString()),
     }));
 
   // 初始只取最新 10 条（服务端不支持 limit 时也仅渲染 10 条）
@@ -85,7 +97,7 @@ export const MessageWall = () => {
     }
   }, []);
 
-  // 仅“底部上拉”加载更老（before 游标）；回退 offset；合并并增加 renderCount
+  // 仅“底部上拉”加载更老（before 游标）；回退 offset；合并并增加 renderCount（只按真正新增的条数增加）
   const loadOlder = useCallback(async () => {
     if (busyRef.current || !hasMore) return;
     busyRef.current = true;
@@ -106,19 +118,29 @@ export const MessageWall = () => {
       const older = mapDB(incoming).sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
 
       if (older.length > 0) {
+        let added = 0;
+        let newOldestCursor: string | null = null;
+
         setMessages((prev) => {
-          const map = new Map<string, Message>();
-          [...prev, ...older].forEach((m) => map.set(m.id, m));
-          return Array.from(map.values()).sort(
+          const exist = new Set(prev.map((m) => m.id));
+          const dedupOlder = older.filter((m) => !exist.has(m.id));
+          added = dedupOlder.length;
+          if (older.length > 0) {
+            newOldestCursor = older[older.length - 1].timestamp.toISOString();
+          }
+          const merged = [...prev, ...dedupOlder].sort(
             (a, b) => b.timestamp.getTime() - a.timestamp.getTime()
           );
+          return merged;
         });
 
-        // 增加渲染条数，让新加载的旧消息立刻出现
-        setRenderCount((c) => c + older.length);
+        if (added > 0) {
+          setRenderCount((c) => c + added);
+        }
 
-        // 更新最老游标
-        oldestCursorRef.current = older[older.length - 1].timestamp.toISOString();
+        if (newOldestCursor) {
+          oldestCursorRef.current = newOldestCursor;
+        }
 
         // 若本次返回不足 PAGE_SIZE，说明没有更多了
         if (older.length < PAGE_SIZE) {
@@ -233,8 +255,7 @@ export const MessageWall = () => {
         content: msg.content,
         author: msg.username ?? '匿名',
         timestamp: new Date(msg.created_at),
-        gradientType:
-          gradientTypes[Math.floor(Math.random() * gradientTypes.length)],
+        gradientType: pickGradient(msg.id.toString()),
       };
       setMessages((prev) => [newMessage, ...prev].sort(
         (a, b) => b.timestamp.getTime() - a.timestamp.getTime()
@@ -309,7 +330,7 @@ export const MessageWall = () => {
               disabled={bottomLoading}
               onClick={() => loadOlder()}
             >
-              {bottomLoading ? "加载中…" : `加载更多`}
+              {bottomLoading ? "加载中…" : `加载更早信息`}
             </Button>
           ) : (
             <div className="text-sm text-muted-foreground py-2">— 没有更多了 —</div>
