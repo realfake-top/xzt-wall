@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { MessageCard } from "./MessageCard";
 import { PostMessageDialog } from "./PostMessageDialog";
 import { Button } from "@/components/ui/button";
@@ -12,55 +12,63 @@ interface Message {
   gradientType: 'purple' | 'cyan' | 'green' | 'orange';
 }
 
-const initialMessages: Message[] = [
-  {
-    id: "1",
-    content: "今天天气真好，心情也跟着好起来了～",
-    author: "小纸条",
-    timestamp: new Date(Date.now() - 30 * 60 * 1000),
-    gradientType: "purple"
-  },
-  {
-    id: "2", 
-    content: "周末想去看电影，有人一起吗？",
-    author: "匿名",
-    timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000),
-    gradientType: "cyan"
-  },
-  {
-    id: "3",
-    content: "刚刚路过咖啡店，闻到了很香的咖啡味道，突然想起了很多美好的回忆。有时候幸福就是这么简单。",
-    author: "路人甲",
-    timestamp: new Date(Date.now() - 4 * 60 * 60 * 1000),
-    gradientType: "green"
-  },
-  {
-    id: "4",
-    content: "深夜时分，想念着远方的朋友。",
-    author: "夜猫子",
-    timestamp: new Date(Date.now() - 8 * 60 * 60 * 1000),
-    gradientType: "orange"
-  }
-];
+// The shape returned by the backend for a single message
+interface DBMessage {
+  id: number;
+  username: string | null;
+  content: string;
+  created_at: string;
+}
 
 export const MessageWall = () => {
-  const [messages, setMessages] = useState<Message[]>(initialMessages);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [isPostDialogOpen, setIsPostDialogOpen] = useState(false);
 
   const gradientTypes: Array<'purple' | 'cyan' | 'green' | 'orange'> = ['purple', 'cyan', 'green', 'orange'];
 
   const handleAddMessage = (content: string, author: string) => {
-    const newMessage: Message = {
-      id: Date.now().toString(),
-      content,
-      author: author || "匿名",
-      timestamp: new Date(),
-      gradientType: gradientTypes[Math.floor(Math.random() * gradientTypes.length)]
-    };
-
-    setMessages(prev => [newMessage, ...prev]);
-    setIsPostDialogOpen(false);
+    // Send the new message to the backend. The backend will return the saved record.
+    fetch('/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: author || '匿名', content })
+    })
+      .then(res => res.json())
+      .then((msg: DBMessage) => {
+        const newMessage: Message = {
+          id: msg.id.toString(),
+          content: msg.content,
+          author: msg.username ?? '匿名',
+          timestamp: new Date(msg.created_at),
+          gradientType: gradientTypes[Math.floor(Math.random() * gradientTypes.length)]
+        };
+        setMessages(prev => [newMessage, ...prev]);
+        setIsPostDialogOpen(false);
+      })
+      .catch(err => {
+        console.error(err);
+      });
   };
+
+  // Load existing messages when the component mounts
+  useEffect(() => {
+    fetch('/messages')
+      .then(res => res.json())
+      .then((data: DBMessage[]) => {
+        setMessages(
+          data.map(msg => ({
+            id: msg.id.toString(),
+            content: msg.content,
+            author: msg.username ?? '匿名',
+            timestamp: new Date(msg.created_at),
+            gradientType: gradientTypes[Math.floor(Math.random() * gradientTypes.length)]
+          }))
+        );
+      })
+      .catch(err => {
+        console.error(err);
+      });
+  }, []);
 
   return (
     <div className="min-h-screen bg-background">
@@ -88,7 +96,7 @@ export const MessageWall = () => {
             <MessageCard key={message.id} message={message} />
           ))}
         </div>
-        
+
         {/* Load More */}
         <div className="text-center py-8">
           <p className="text-muted-foreground text-sm">上拉可以获取更多...</p>
