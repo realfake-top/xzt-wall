@@ -29,6 +29,7 @@ export const MessageWall = () => {
   // 底部无限加载
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
+  const [inited, setInited] = useState(false); // ✅ 首次加载完成标记
 
   // 游标
   const newestCursorRef = useRef<string | null>(null);
@@ -50,7 +51,7 @@ export const MessageWall = () => {
 
   const mapDB = (rows: DBMessage[]): Message[] =>
     rows.map((msg) => ({
-      id: msg.id.toString(),
+      id: String(msg.id),
       content: msg.content,
       author: msg.username ?? "匿名",
       timestamp: new Date(msg.created_at),
@@ -76,34 +77,31 @@ export const MessageWall = () => {
         oldestCursorRef.current =
           list[list.length - 1].timestamp.toISOString();
       }
+      setInited(true); // ✅ 标记初始化完成
     } catch (e) {
       console.error(e);
     }
   }, []);
 
-  // 触底加载更早的（一次正好 10 条）
+  // 加载更早的（一次正好 10 条）
   const loadOlder = useCallback(async () => {
     if (busyRef.current || !hasMore) return;
-    if (!oldestCursorRef.current && messages.length === 0) return;
 
     busyRef.current = true;
     setLoadingMore(true);
     try {
-      let incoming: DBMessage[] = [];
+      let url: string;
       if (oldestCursorRef.current) {
-        const res = await fetch(
-          `/messages?limit=${PAGE_SIZE}&before=${encodeURIComponent(
-            oldestCursorRef.current,
-          )}`,
-        );
-        incoming = await res.json();
+        url = `/messages?limit=${PAGE_SIZE}&before=${encodeURIComponent(
+          oldestCursorRef.current,
+        )}`;
       } else {
-        // 回退：offset 模式
-        const res = await fetch(
-          `/messages?limit=${PAGE_SIZE}&offset=${messages.length}`,
-        );
-        incoming = await res.json();
+        // ✅ 没有游标时走 offset 回退模式（即使 messages.length === 0 也可）
+        url = `/messages?limit=${PAGE_SIZE}&offset=${messages.length}`;
       }
+
+      const res = await fetch(url);
+      const incoming: DBMessage[] = await res.json();
 
       const older = mapDB(incoming).sort(
         (a, b) => b.timestamp.getTime() - a.timestamp.getTime(),
@@ -113,11 +111,14 @@ export const MessageWall = () => {
         setMessages((prev) => {
           const map = new Map<string, Message>();
           [...prev, ...older].forEach((m) => map.set(m.id, m));
-          return Array.from(map.values()).sort(
+          const merged = Array.from(map.values()).sort(
             (a, b) => b.timestamp.getTime() - a.timestamp.getTime(),
           );
+          return merged;
         });
+
         setRenderCount((c) => c + older.length);
+
         oldestCursorRef.current =
           older[older.length - 1].timestamp.toISOString();
         if (!newestCursorRef.current) {
@@ -125,7 +126,6 @@ export const MessageWall = () => {
         }
       }
 
-      // 本次返回不足 10 条 => 没有更多
       if (older.length < PAGE_SIZE) {
         setHasMore(false);
       }
@@ -137,26 +137,47 @@ export const MessageWall = () => {
     }
   }, [messages.length, hasMore]);
 
+  // 辅助：哨兵是否在视区内
+  const isSentinelVisible = useCallback(() => {
+    const el = sentinelRef.current;
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.top <= window.innerHeight;
+  }, []);
+
+  // ✅ 首屏高度不够时，自动补页以铺满屏幕（最多连翻 5 页，避免死循环）
+  const fillViewportIfNeeded = useCallback(async () => {
+    if (!inited || !hasMore || loadingMore) return;
+    let tries = 0;
+    while (tries < 5 && hasMore && isSentinelVisible() && !busyRef.current) {
+      await loadOlder();
+      tries += 1;
+      // 让 DOM 有机会更新
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  }, [inited, hasMore, loadingMore, isSentinelVisible, loadOlder]);
+
   useEffect(() => {
     loadInitial();
   }, [loadInitial]);
 
-  // 监听底部哨兵，自动触发加载更多（每次只触发一页）
+  // ✅ 初始化完成/数据变动后，尝试首屏自动补页
   useEffect(() => {
-    // 没有更多了就取消观察
-    if (!hasMore) {
-      if (observerRef.current) {
-        observerRef.current.disconnect();
-        observerRef.current = null;
-      }
-      return;
-    }
+    fillViewportIfNeeded();
+  }, [fillViewportIfNeeded, messages.length]);
+
+  // ✅ 初始化完成后再绑定观察器；每次 messages.length/hasMore 变更时重建，保证不会错过触发
+  useEffect(() => {
+    if (!inited) return;
     if (!sentinelRef.current) return;
 
+    // 清理旧观察器
     if (observerRef.current) {
       observerRef.current.disconnect();
       observerRef.current = null;
     }
+
+    if (!hasMore) return;
 
     observerRef.current = new IntersectionObserver(
       (entries) => {
@@ -167,7 +188,7 @@ export const MessageWall = () => {
       },
       {
         root: null,
-        rootMargin: "0px 0px 200px 0px", // 提前一些触发
+        rootMargin: "0px 0px 400px 0px", // ✅ 提前更多触发
         threshold: 0.01,
       },
     );
@@ -180,7 +201,14 @@ export const MessageWall = () => {
         observerRef.current = null;
       }
     };
-  }, [loadOlder, hasMore]);
+  }, [inited, hasMore, messages.length, loadOlder]);
+
+  // 视口变化时也尝试补页
+  useEffect(() => {
+    const onResize = () => fillViewportIfNeeded();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [fillViewportIfNeeded]);
 
   // 发新帖：插入顶部
   const handleAddMessage = async (content: string, author: string) => {
@@ -204,7 +232,10 @@ export const MessageWall = () => {
       if (!oldestCursorRef.current) {
         oldestCursorRef.current = newMessage.timestamp.toISOString();
       }
+      setRenderCount((c) => c + 1);
       setIsPostDialogOpen(false);
+      // 新增后也尝试补页（万一首屏仍不够高）
+      fillViewportIfNeeded();
     } catch (err) {
       console.error(err);
     }
