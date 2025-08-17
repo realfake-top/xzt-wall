@@ -12,15 +12,14 @@
         "build": {
           "cmds": [
             "npm run build",
-            "test -f dist/index.html || (echo '❌ build output missing: dist/index.html' && exit 1)",
-            "npm i --no-save serve@14.2.1"
+            "test -f dist/index.html || (echo '❌ build output missing: dist/index.html' && exit 1)"
           ]
         }
       }
     }
   },
   "deploy": {
-    "startCommand": "npx serve -s dist -l $PORT",
+    "startCommand": "npm run start",
     "healthcheckPath": "/index.html",
     "healthcheckTimeout": 100,
     "restartPolicyType": "ON_FAILURE",

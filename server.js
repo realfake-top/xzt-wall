@@ -3,42 +3,85 @@ import http from 'http';
 import { Server as SocketServer } from 'socket.io';
 import { Pool } from 'pg';
 import cors from 'cors';
+import path from 'path';
 
+// Initialize express app and HTTP server
 const app = express();
 const server = http.createServer(app);
 const io = new SocketServer(server, { cors: { origin: '*' } });
+
+// Connect to PostgreSQL using the DATABASE_URL provided by Railway
+// See https://docs.railway.com/guides/postgresql#connect for the required env variables【173659314035416†L233-L243】.
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+// Ensure the messages table exists; this will run on startup.
+async function ensureTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS public.messages (
+      id SERIAL PRIMARY KEY,
+      username TEXT,
+      content TEXT,
+      created_at TIMESTAMP DEFAULT now()
+    )
+  `);
+}
 
 app.use(cors());
 app.use(express.json());
 
-// 拉取留言
-app.get('/messages', async (req, res) => {
-  const { rows } = await pool.query(
-    'SELECT * FROM public.messages ORDER BY created_at DESC LIMIT 100'
-  );
-  res.json(rows);
+// Fetch the most recent messages from the database
+app.get('/messages', async (_req, res) => {
+  try {
+    const { rows } = await pool.query(
+      'SELECT id, username, content, created_at FROM public.messages ORDER BY created_at DESC LIMIT 100'
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch messages' });
+  }
 });
 
-// 发布新留言
+// Create a new message in the database
 app.post('/messages', async (req, res) => {
   const { username, content } = req.body;
-  const { rows } = await pool.query(
-    'INSERT INTO public.messages (username, content) VALUES ($1, $2) RETURNING *',
-    [username || '匿名', content]
-  );
-  const msg = rows[0];
-  // 通过 WebSocket 广播给所有在线客户端
-  io.emit('new_message', msg);
-  res.status(201).json(msg);
+  try {
+    const { rows } = await pool.query(
+      'INSERT INTO public.messages (username, content) VALUES ($1, $2) RETURNING *',
+      [username || '匿名', content]
+    );
+    const msg = rows[0];
+    // Emit the new message to all connected WebSocket clients
+    io.emit('new_message', msg);
+    res.status(201).json(msg);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to create message' });
+  }
 });
 
-// WebSocket 连接
+// WebSocket connection handler
 io.on('connection', socket => {
   console.log('Client connected:', socket.id);
 });
 
-const PORT = process.env.PORT || 4000;
-server.listen(PORT, () => {
-  console.log(`Server listening on ${PORT}`);
+// Serve the built React app from the "dist" folder
+// This assumes you have run `npm run build` which outputs the static files to dist/.
+const staticPath = path.join(process.cwd(), 'dist');
+app.use(express.static(staticPath));
+app.get('*', (_req, res) => {
+  res.sendFile(path.join(staticPath, 'index.html'));
+});
+
+// Start the server after ensuring the database table exists
+async function start() {
+  await ensureTable();
+  const port = process.env.PORT || 4000; // Railway provides PORT env variable【904717385939209†L124-L128】.
+  server.listen(port, () => {
+    console.log(`Server listening on ${port}`);
+  });
+}
+
+start().catch(err => {
+  console.error('Failed to start server:', err);
 });
