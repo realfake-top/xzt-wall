@@ -75,8 +75,15 @@ app.get('*', (_req, res) => {
 
 // Start the server after ensuring the database table exists
 async function start() {
-  await ensureTable();
-  const port = process.env.PORT || 4000; // Railway provides PORT env variable【904717385939209†L124-L128】.
+  try {
+    await ensureTable();
+  } catch (err) {
+    // 如果数据库初始化失败，记录错误后继续启动服务，
+    // 这样至少静态页面可以访问，接口会返回 500 错误
+    console.error('Database init failed:', err);
+  }
+
+  const port = process.env.PORT || 4000;
   server.listen(port, () => {
     console.log(`Server listening on ${port}`);
   });
