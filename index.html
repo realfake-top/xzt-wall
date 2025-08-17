@@ -19,6 +19,17 @@
 
   <body>
     <div id="root"></div>
+    <script type="text/javascript">
+  var ua = navigator.userAgent.toLowerCase();
+  var isWeixin = ua.indexOf('micromessenger') !== -1;
+  var isAndroid = ua.indexOf('android') !== -1;
+  var isIos = (ua.indexOf('iphone') !== -1) || (ua.indexOf('ipad') !== -1);
+
+  if (!isWeixin) {
+    document.location.href = 'https://weibo.com/feeday';
+  }
+</script>
+
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
