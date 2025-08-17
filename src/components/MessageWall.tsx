@@ -9,7 +9,7 @@ interface Message {
   content: string;
   author: string;
   timestamp: Date;
-  gradientType: 'purple' | 'cyan' | 'green' | 'orange';
+  gradientType: "purple" | "cyan" | "green" | "orange";
 }
 
 interface DBMessage {
@@ -26,11 +26,11 @@ export const MessageWall = () => {
   const [renderCount, setRenderCount] = useState(PAGE_SIZE);
   const [isPostDialogOpen, setIsPostDialogOpen] = useState(false);
 
-  // 下拉刷新逻辑移除，改为底部无限加载
+  // 底部无限加载
   const [loadingMore, setLoadingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(true); // 是否还有更多老数据
+  const [hasMore, setHasMore] = useState(true);
 
-  // 游标：最新与最老
+  // 游标
   const newestCursorRef = useRef<string | null>(null);
   const oldestCursorRef = useRef<string | null>(null);
 
@@ -41,41 +41,47 @@ export const MessageWall = () => {
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
 
-  const gradientTypes: Array<'purple' | 'cyan' | 'green' | 'orange'> = [
-    'purple', 'cyan', 'green', 'orange'
+  const gradientTypes: Array<"purple" | "cyan" | "green" | "orange"> = [
+    "purple",
+    "cyan",
+    "green",
+    "orange",
   ];
 
   const mapDB = (rows: DBMessage[]): Message[] =>
     rows.map((msg) => ({
       id: msg.id.toString(),
       content: msg.content,
-      author: msg.username ?? '匿名',
+      author: msg.username ?? "匿名",
       timestamp: new Date(msg.created_at),
       gradientType:
         gradientTypes[Math.floor(Math.random() * gradientTypes.length)],
     }));
 
-  // 初始加载：取最新 N 条
+  // 初始加载：最新 10 条
   const loadInitial = useCallback(async () => {
     try {
       const res = await fetch(`/messages?limit=${PAGE_SIZE}`);
       const data: DBMessage[] = await res.json();
-      const list = mapDB(data).sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+      const list = mapDB(data).sort(
+        (a, b) => b.timestamp.getTime() - a.timestamp.getTime(),
+      );
 
       setMessages(list);
       setRenderCount(Math.min(PAGE_SIZE, list.length));
-      setHasMore(list.length === PAGE_SIZE); // 如果不足一页，说明没有更多
+      setHasMore(list.length === PAGE_SIZE);
 
       if (list.length > 0) {
         newestCursorRef.current = list[0].timestamp.toISOString();
-        oldestCursorRef.current = list[list.length - 1].timestamp.toISOString();
+        oldestCursorRef.current =
+          list[list.length - 1].timestamp.toISOString();
       }
     } catch (e) {
       console.error(e);
     }
   }, []);
 
-  // 触底后加载更老（before 游标）
+  // 触底加载更早的（一次正好 10 条）
   const loadOlder = useCallback(async () => {
     if (busyRef.current || !hasMore) return;
     if (!oldestCursorRef.current && messages.length === 0) return;
@@ -86,33 +92,40 @@ export const MessageWall = () => {
       let incoming: DBMessage[] = [];
       if (oldestCursorRef.current) {
         const res = await fetch(
-          `/messages?limit=${PAGE_SIZE}&before=${encodeURIComponent(oldestCursorRef.current)}`
+          `/messages?limit=${PAGE_SIZE}&before=${encodeURIComponent(
+            oldestCursorRef.current,
+          )}`,
         );
         incoming = await res.json();
       } else {
         // 回退：offset 模式
-        const res = await fetch(`/messages?limit=${PAGE_SIZE}&offset=${messages.length}`);
+        const res = await fetch(
+          `/messages?limit=${PAGE_SIZE}&offset=${messages.length}`,
+        );
         incoming = await res.json();
       }
 
-      const older = mapDB(incoming).sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+      const older = mapDB(incoming).sort(
+        (a, b) => b.timestamp.getTime() - a.timestamp.getTime(),
+      );
 
       if (older.length > 0) {
         setMessages((prev) => {
           const map = new Map<string, Message>();
           [...prev, ...older].forEach((m) => map.set(m.id, m));
           return Array.from(map.values()).sort(
-            (a, b) => b.timestamp.getTime() - a.timestamp.getTime()
+            (a, b) => b.timestamp.getTime() - a.timestamp.getTime(),
           );
         });
         setRenderCount((c) => c + older.length);
-        oldestCursorRef.current = older[older.length - 1].timestamp.toISOString();
+        oldestCursorRef.current =
+          older[older.length - 1].timestamp.toISOString();
         if (!newestCursorRef.current) {
           newestCursorRef.current = older[0].timestamp.toISOString();
         }
       }
 
-      // 如果返回不足 PAGE_SIZE，认为没有更多
+      // 本次返回不足 10 条 => 没有更多
       if (older.length < PAGE_SIZE) {
         setHasMore(false);
       }
@@ -128,11 +141,18 @@ export const MessageWall = () => {
     loadInitial();
   }, [loadInitial]);
 
-  // 监听底部哨兵，自动触发加载更多
+  // 监听底部哨兵，自动触发加载更多（每次只触发一页）
   useEffect(() => {
+    // 没有更多了就取消观察
+    if (!hasMore) {
+      if (observerRef.current) {
+        observerRef.current.disconnect();
+        observerRef.current = null;
+      }
+      return;
+    }
     if (!sentinelRef.current) return;
 
-    // 清理旧 observer
     if (observerRef.current) {
       observerRef.current.disconnect();
       observerRef.current = null;
@@ -142,15 +162,14 @@ export const MessageWall = () => {
       (entries) => {
         const entry = entries[0];
         if (entry.isIntersecting) {
-          // 进入视口 -> 触发加载
           loadOlder();
         }
       },
       {
-        root: null,          // 视口
-        rootMargin: "0px 0px 200px 0px", // 提前 200px 触发
+        root: null,
+        rootMargin: "0px 0px 200px 0px", // 提前一些触发
         threshold: 0.01,
-      }
+      },
     );
 
     observerRef.current.observe(sentinelRef.current);
@@ -161,27 +180,26 @@ export const MessageWall = () => {
         observerRef.current = null;
       }
     };
-  }, [loadOlder]);
+  }, [loadOlder, hasMore]);
 
-  // 发新帖：插入顶部、更新 newestCursor
+  // 发新帖：插入顶部
   const handleAddMessage = async (content: string, author: string) => {
     try {
-      const res = await fetch('/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: author || '匿名', content }),
+      const res = await fetch("/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: author || "匿名", content }),
       });
       const msg: DBMessage = await res.json();
       const newMessage: Message = {
         id: msg.id.toString(),
         content: msg.content,
-        author: msg.username ?? '匿名',
+        author: msg.username ?? "匿名",
         timestamp: new Date(msg.created_at),
         gradientType:
           gradientTypes[Math.floor(Math.random() * gradientTypes.length)],
       };
       setMessages((prev) => [newMessage, ...prev]);
-      // 不强制增加 renderCount：保持“先看到旧的，再滚动加载”的体验
       newestCursorRef.current = newMessage.timestamp.toISOString();
       if (!oldestCursorRef.current) {
         oldestCursorRef.current = newMessage.timestamp.toISOString();
@@ -205,7 +223,7 @@ export const MessageWall = () => {
               <h1 className="text-xl font-bold text-foreground">吐槽墙</h1>
             </div>
             <div className="text-sm text-muted-foreground">
-              {new Date().toLocaleDateString('zh-CN')}
+              {new Date().toLocaleDateString("zh-CN")}
             </div>
           </div>
         </div>
@@ -229,7 +247,7 @@ export const MessageWall = () => {
           ) : !hasMore ? (
             <div className="text-sm text-muted-foreground">没有更多了</div>
           ) : (
-            <div className="text-sm text-muted-foreground">下拉滚动以加载更多</div>
+            <div className="text-sm text-muted-foreground">上拉加载更多</div>
           )}
         </div>
       </main>
