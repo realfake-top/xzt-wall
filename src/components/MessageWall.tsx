@@ -28,14 +28,17 @@ type PullMode = null | "bottom";
 
 export const MessageWall = () => {
   const [messages, setMessages] = useState<Message[]>([]);
+  // 控制“当前渲染条数”：10 → 20 → 30 ...
   const [renderCount, setRenderCount] = useState(PAGE_SIZE);
   const [isPostDialogOpen, setIsPostDialogOpen] = useState(false);
-  const [hasMore, setHasMore] = useState(true);
 
-  // 底部拉动的 UI 状态
+  // 底部上拉 UI 状态
   const [bottomPull, setBottomPull] = useState(0);
   const [bottomReady, setBottomReady] = useState(false);
   const [bottomLoading, setBottomLoading] = useState(false);
+
+  // 是否还有更多老消息
+  const [hasMore, setHasMore] = useState(true);
 
   // 游标：最老
   const oldestCursorRef = useRef<string | null>(null);
@@ -44,7 +47,7 @@ export const MessageWall = () => {
   const pullingRef = useRef(false);
   const pullModeRef = useRef<PullMode>(null);
   const startYRef = useRef(0);
-  const busyRef = useRef(false); // 任一刷新/加载中，避免并发
+  const busyRef = useRef(false); // 任一加载中，避免并发
 
   const gradientTypes: Array<'purple' | 'cyan' | 'green' | 'orange'> = [
     'purple', 'cyan', 'green', 'orange'
@@ -60,26 +63,31 @@ export const MessageWall = () => {
         gradientTypes[Math.floor(Math.random() * gradientTypes.length)],
     }));
 
-  // 初始加载：取最新 N 条（服务端若不支持 limit，这里仍然只展示前 N 条）
+  // 初始只取最新 10 条（服务端不支持 limit 时也仅渲染 10 条）
   const loadInitial = useCallback(async () => {
-    const res = await fetch(`/messages?limit=${PAGE_SIZE}`);
-    const data: DBMessage[] = await res.json();
-    const list = mapDB(data).sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+    try {
+      const res = await fetch(`/messages?limit=${PAGE_SIZE}`);
+      const data: DBMessage[] = await res.json();
+      const list = mapDB(data).sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
 
-    setMessages(list);
-    setRenderCount(Math.min(PAGE_SIZE, list.length));
-    setHasMore(list.length >= PAGE_SIZE);
+      setMessages(list);
+      setRenderCount(Math.min(PAGE_SIZE, list.length));
 
-    if (list.length > 0) {
-      oldestCursorRef.current = list[list.length - 1].timestamp.toISOString();
+      if (list.length > 0) {
+        oldestCursorRef.current = list[list.length - 1].timestamp.toISOString();
+      }
+      // 如果一开始就不足 10 条，直接标记没有更多
+      if (list.length < PAGE_SIZE) {
+        setHasMore(false);
+      }
+    } catch (e) {
+      console.error(e);
     }
   }, []);
 
-  // 底部：拉取更老（before 游标）；回退 offset；合并并增加 renderCount
+  // 仅“底部上拉”加载更老（before 游标）；回退 offset；合并并增加 renderCount
   const loadOlder = useCallback(async () => {
     if (busyRef.current || !hasMore) return;
-    if (!oldestCursorRef.current && messages.length === 0) return;
-
     busyRef.current = true;
     setBottomLoading(true);
     try {
@@ -96,6 +104,7 @@ export const MessageWall = () => {
       }
 
       const older = mapDB(incoming).sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+
       if (older.length > 0) {
         setMessages((prev) => {
           const map = new Map<string, Message>();
@@ -104,10 +113,21 @@ export const MessageWall = () => {
             (a, b) => b.timestamp.getTime() - a.timestamp.getTime()
           );
         });
+
+        // 增加渲染条数，让新加载的旧消息立刻出现
         setRenderCount((c) => c + older.length);
+
+        // 更新最老游标
         oldestCursorRef.current = older[older.length - 1].timestamp.toISOString();
+
+        // 若本次返回不足 PAGE_SIZE，说明没有更多了
+        if (older.length < PAGE_SIZE) {
+          setHasMore(false);
+        }
+      } else {
+        // 没有任何返回，也认为没有更多了
+        setHasMore(false);
       }
-      setHasMore(older.length >= PAGE_SIZE);
     } catch (e) {
       console.error(e);
     } finally {
@@ -120,7 +140,7 @@ export const MessageWall = () => {
     loadInitial();
   }, [loadInitial]);
 
-  // ------- 仅“底拉动”触发更新，普通滚动不触发 ----------
+  // ------- 仅“底部上拉”触发加载 ----------
   useEffect(() => {
     const root = document.scrollingElement || document.documentElement;
 
@@ -140,7 +160,7 @@ export const MessageWall = () => {
       if (busyRef.current || !hasMore) return;
       const touchY = e.touches[0].clientY;
       startYRef.current = touchY;
-      if (isAtBottom() && hasMore) {
+      if (isAtBottom()) {
         pullingRef.current = true;
         pullModeRef.current = "bottom";
       } else {
@@ -153,9 +173,10 @@ export const MessageWall = () => {
       if (!pullingRef.current || busyRef.current || !hasMore) return;
       const dy = e.touches[0].clientY - startYRef.current;
 
+      // 仅“底部上拉加载”
       if (pullModeRef.current === "bottom") {
         if (dy < 0) {
-          e.preventDefault();
+          e.preventDefault(); // 需要 passive:false
           const d = Math.min(MAX_PULL, -dy * DAMPING);
           setBottomPull(d);
           setBottomReady(d >= THRESHOLD);
@@ -166,7 +187,7 @@ export const MessageWall = () => {
     };
 
     const onTouchEnd = async () => {
-      if (!pullingRef.current || busyRef.current || !hasMore) {
+      if (!pullingRef.current || busyRef.current) {
         resetBottomUI();
         pullingRef.current = false;
         pullModeRef.current = null;
@@ -174,7 +195,7 @@ export const MessageWall = () => {
       }
 
       if (pullModeRef.current === "bottom") {
-        if (bottomReady && hasMore) {
+        if (bottomReady) {
           setBottomLoading(true);
           setBottomPull(48);
           await loadOlder();
@@ -198,7 +219,7 @@ export const MessageWall = () => {
     };
   }, [bottomReady, loadOlder, hasMore]);
 
-  // 发新帖：插入顶部、增加 renderCount、更新 newestCursor
+  // 发新帖：插入顶部、renderCount+1（可立即看到），不影响“底部加载老消息”的游标
   const handleAddMessage = async (content: string, author: string) => {
     try {
       const res = await fetch('/messages', {
@@ -215,8 +236,11 @@ export const MessageWall = () => {
         gradientType:
           gradientTypes[Math.floor(Math.random() * gradientTypes.length)],
       };
-      setMessages((prev) => [newMessage, ...prev]);
+      setMessages((prev) => [newMessage, ...prev].sort(
+        (a, b) => b.timestamp.getTime() - a.timestamp.getTime()
+      ));
       setRenderCount((c) => c + 1);
+      // 最老游标不更新（只负责向下翻旧消息）
       if (!oldestCursorRef.current) {
         oldestCursorRef.current = newMessage.timestamp.toISOString();
       }
@@ -246,34 +270,49 @@ export const MessageWall = () => {
       </header>
 
       {/* 列表 */}
-      <main className="max-w-2xl mx-auto px-4 py-6 pb-24">
+      <main className="max-w-2xl mx-auto px-4 py-6 pb-28">
         <div className="space-y-4">
-          {/* ✅ 这里是真正限制渲染条数的关键 */}
+          {/* 仅渲染 renderCount 条 */}
           {messages.slice(0, renderCount).map((m) => (
             <MessageCard key={m.id} message={m} />
           ))}
         </div>
 
-        {/* 底部上拉提示/加载条 */}
-        <div
-          className="sticky bottom-0 z-20 flex items-center justify-center overflow-hidden"
-          style={{ height: bottomLoading ? 48 : bottomPull }}
-        >
-          {(bottomPull > 0 || bottomLoading) && (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              {bottomLoading ? (
-                <>
-                  <span className="inline-block h-4 w-4 rounded-full border-2 border-muted-foreground/40 border-t-foreground animate-spin" />
-                  <span>正在加载更早的留言…</span>
-                </>
-              ) : !hasMore ? (
-                <span>已加载全部消息</span>
-              ) : bottomReady ? (
-                <span>松手加载更早</span>
-              ) : (
-                <span>上拉加载</span>
-              )}
-            </div>
+        {/* 底部上拉提示/加载条（移动端上拉触发） */}
+        {hasMore && (
+          <div
+            className="sticky bottom-16 z-20 flex items-center justify-center overflow-hidden"
+            style={{ height: bottomLoading ? 48 : bottomPull }}
+          >
+            {(bottomPull > 0 || bottomLoading) && (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                {bottomLoading ? (
+                  <>
+                    <span className="inline-block h-4 w-4 rounded-full border-2 border-muted-foreground/40 border-t-foreground animate-spin" />
+                    <span>正在加载更早的留言…</span>
+                  </>
+                ) : bottomReady ? (
+                  <span>松手加载更早</span>
+                ) : (
+                  <span>上拉加载</span>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 桌面端/通用的“加载更多”按钮（可与上拉二选一使用） */}
+        <div className="mt-6 flex justify-center">
+          {hasMore ? (
+            <Button
+              variant="outline"
+              disabled={bottomLoading}
+              onClick={() => loadOlder()}
+            >
+              {bottomLoading ? "加载中…" : `加载更早的 ${PAGE_SIZE} 条`}
+            </Button>
+          ) : (
+            <div className="text-sm text-muted-foreground py-2">— 没有更多了 —</div>
           )}
         </div>
       </main>
