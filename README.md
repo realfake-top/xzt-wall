@@ -6,7 +6,7 @@
 
 ###  推荐 Railway 部署
 
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.com?referralCode=realfake-top)
+[![Deploy on Railway](https://railway.app/button.svg)](https://railway.com?referralCode=tcq233)
 
 
 ## 创建数据库表
